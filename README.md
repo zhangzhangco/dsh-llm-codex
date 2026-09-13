@@ -55,7 +55,8 @@ Mounted from `~/.dsh/profiles/web/cordis.patch.yml`:
       name: dsh-llm-codex
       config:
         provider: codex-local
-        command: /Applications/ChatGPT.app/Contents/Resources/codex
+        # Codex's own sandbox (not the harness permission mode). See
+        # "Sandbox and file writes" below before choosing a value.
         sandbox: read-only
         ephemeral: true
         transport: auto
@@ -86,6 +87,36 @@ Mounted from `~/.dsh/profiles/web/cordis.patch.yml`:
 | `fallback.model` | empty | Model id for the fallback; empty reuses the request id |
 | `fallback.headers` | `{}` | Extra request headers |
 | `fallback.timeoutMs` | `300000` | Fallback request budget |
+
+### Sandbox and file writes
+
+`sandbox` selects **Codex's own sandbox** for the CLI route. It is a different
+boundary from this harness's permission mode, which keeps gating DSH's own tools
+independently; changing one does not change the other.
+
+| Value | Effect on Codex's tools |
+|---|---|
+| `read-only` | Reads and answers; every file write is refused |
+| `workspace-write` | Writes inside the session workspace; other targets stay refused |
+| `danger-full-access` | No Codex sandbox at all |
+
+The two sandboxed modes need macOS Seatbelt, applied through `sandbox-exec`. A
+host that already runs inside a sandbox cannot apply a nested profile — the call
+fails with `sandbox_apply: Operation not permitted` — and then **every**
+sandboxed mode refuses writes, no matter which roots are allowed:
+
+```sh
+# Prints "sandbox_apply: Operation not permitted" when sandboxed modes cannot work.
+sandbox-exec -p '(version 1)(allow default)' /bin/echo ok
+```
+
+On such a host only `danger-full-access` lets Codex write, and that means Codex
+runs with no filesystem boundary of its own. The plugin checks this capability at
+load time: when a sandboxed mode is configured on a host that cannot create one,
+startup logs a warning naming the fix, and a sandbox refusal during a run adds the
+same advice to the failure. A refusal that arrives as ordinary assistant prose
+("the filesystem is read-only") rarely carries a machine-checkable signal, so the
+capability probe, not that prose, is what drives the advice.
 
 ### Enabling the fallback
 
@@ -153,7 +184,7 @@ Build the package, copy the `.tgz` to the other Mac (AirDrop, `scp`, USB), then
 on that machine:
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-llm-codex-0.1.0.tgz
+dsh plugin --profile web add /path/to/dsh-llm-codex-0.1.1.tgz
 ```
 
 Then add the mount row to that machine's
@@ -238,3 +269,8 @@ relative path.
   placeholders; `codex exec` takes images as file arguments, not JSON items.
 - **Tool schemas are ignored on the CLI path.** The fallback path does send
   them and maps streamed tool calls back.
+- **Codex's tools run outside the harness sandbox.** On the CLI path Codex is a
+  separate process with its own sandbox, so the harness workspace boundary does
+  not constrain it. Where Codex cannot create its own sandbox, writes require
+  `danger-full-access` and the run is unconfined; the fallback path executes no
+  tools at all.

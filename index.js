@@ -8,7 +8,7 @@
  * own tool use is not reported back as harness tool calls.
  * @module dsh-llm-codex
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
   EMPTY_RESPONSE_CODE,
@@ -306,17 +306,29 @@ class CodexAdapter extends LlmAdapter {
       const exit = await waitForExit(child);
       stderrText = Buffer.concat(stderrChunks).toString('utf8').trim();
       if (options.signal?.aborted === true) throw new LlmError(`${name}: request aborted`, 'ABORTED');
+      const detail = `${stderrText} ${failure ?? ''}`;
+      const hint = sandboxDiagnostic(detail, this.config.sandbox);
       if (exit.code !== 0) {
         throw new LlmError(
-          `${name}: codex exec exited ${exit.code ?? exit.signal}: ${(stderrText || failure || 'no diagnostic').slice(0, 500)}`,
-          classifyCliFailure(`${stderrText} ${failure ?? ''}`),
+          `${name}: codex exec exited ${exit.code ?? exit.signal}: ${(stderrText || failure || 'no diagnostic').slice(0, 500)}${hint === '' ? '' : ` — ${hint}`}`,
+          classifyCliFailure(detail),
         );
       }
       if (!textSeen && failure !== undefined) {
-        throw new LlmError(`${name}: codex exec reported ${failure.slice(0, 500)}`, classifyCliFailure(failure));
+        throw new LlmError(
+          `${name}: codex exec reported ${failure.slice(0, 500)}${hint === '' ? '' : ` — ${hint}`}`,
+          classifyCliFailure(failure),
+        );
       }
       if (!textSeen && reasoningIndex === undefined) {
         throw new LlmError(`${name}: codex exec produced no assistant message`, EMPTY_RESPONSE_CODE);
+      }
+      // A sandbox denial usually still arrives as a normal assistant reply, so
+      // the run succeeds and nothing reaches the caller. Log the actionable
+      // advice rather than appending it to the model's answer.
+      if (hint !== '' && textSeen) {
+        const warn = options.onWarning ?? ((message) => process.stderr.write(`${message}\n`));
+        warn(`${name}: ${hint}`);
       }
       if (usage !== undefined) {
         yield {
@@ -347,6 +359,52 @@ class CodexAdapter extends LlmAdapter {
 
 /** Failure codes that justify retrying the same turn on the fallback endpoint. */
 const CLI_FALLBACK_CODES = new Set(['AUTH', 'MISSING_CREDENTIAL', 'TRANSPORT', 'TIMEOUT', 'INVALID_REQUEST', EMPTY_RESPONSE_CODE]);
+
+/**
+ * Whether this host can create a Codex sandbox at all.
+ *
+ * Codex's sandboxed modes apply a macOS Seatbelt profile through
+ * `sandbox-exec`. When the harness process already runs inside a sandbox (or
+ * the platform denies policy application), the nested apply fails with
+ * `sandbox_apply: Operation not permitted`, and then every sandboxed mode
+ * rejects writes regardless of which roots are allowed. Only a successful
+ * apply proves the capability, so the probe requires exit code 0.
+ * @returns true when a Seatbelt profile can be applied, or on non-darwin hosts.
+ */
+export function canCreateSandbox() {
+  if (process.platform !== 'darwin') return true;
+  const result = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true'], {
+    stdio: 'ignore',
+    timeout: 5000,
+  });
+  return result.status === 0;
+}
+
+/**
+ * Actionable advice for one Codex sandbox write denial, or an empty string.
+ *
+ * The CLI route delegates file effects to Codex's own sandbox, which is a
+ * separate boundary from this harness's sandbox. Only the sandbox's own
+ * deterministic diagnostics are consulted here: the model's prose about a
+ * refusal is free-form and must never drive a classification.
+ * @param detail - stderr and event text from the failed invocation.
+ * @param sandbox - the configured Codex sandbox mode.
+ * @returns one diagnostic line, or an empty string when nothing matched.
+ */
+export function sandboxDiagnostic(detail, sandbox) {
+  if (sandbox === 'danger-full-access') return '';
+  const text = detail.toLowerCase();
+  const nested = /sandbox_apply:\s*operation not permitted|sandbox-exec/u.test(text);
+  const denied = /patch rejected|writing is blocked|sandbox.{0,40}(blocked|denied|restricted)|filesystem access was denied/u.test(text);
+  if (!nested && !denied) return '';
+  if (nested || !canCreateSandbox()) {
+    return `this host cannot create Codex's own sandbox (a nested sandbox refuses \`sandbox_apply\`), so \`sandbox: ${sandbox}\` rejects every write; set \`sandbox: danger-full-access\` if Codex should write files, accepting that it then runs unsandboxed.`;
+  }
+  if (sandbox === 'read-only') {
+    return `Codex refused the write inside its own read-only sandbox, this plugin's default; set \`sandbox: workspace-write\` and restart to let it write inside the session workspace.`;
+  }
+  return `Codex refused the write inside its workspace-write sandbox; a target outside the session workspace is refused by design.`;
+}
 
 /**
  * Classify a Codex CLI failure into a harness error code.
@@ -479,6 +537,13 @@ export function apply(ctx, rawConfig) {
   if (cliEnabled(config) && command === '') {
     process.stderr.write(
       `${name}: no Codex CLI found; set \`command\` or $CODEX_COMMAND, or install Codex. The route registers but CLI calls fail until then.\n`,
+    );
+  }
+  // Surface the one misconfiguration that otherwise shows up only as Codex
+  // refusing to write files mid-conversation.
+  if (cliEnabled(config) && config.sandbox !== 'danger-full-access' && !canCreateSandbox()) {
+    process.stderr.write(
+      `${name}: this host cannot create Codex's own sandbox (\`sandbox-exec\` is refused here), so \`sandbox: ${config.sandbox}\` will reject every file write; set \`sandbox: danger-full-access\` if Codex should write files.\n`,
     );
   }
   const resolveApiKey = async () => {
