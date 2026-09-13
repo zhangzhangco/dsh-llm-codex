@@ -175,18 +175,25 @@ Then add the mount row to that machine's
 pnpm copies the tarball into its virtual store, so the `.tgz` is only needed for
 the install. Re-run the same command with a newer tarball to update.
 
-### Option B — a git repository
+### Option B — the git repository
 
-Push this directory to a repository, then install it by URL:
+Install straight from this repository. SSH is the reliable form: it uses the
+key already configured for GitHub, while the `https` form blocks on credentials
+when the machine has none cached.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/<you>/dsh-llm-codex.git
+dsh plugin --profile web add git+ssh://git@github.com/zhangzhangco/dsh-llm-codex.git
 ```
 
-A git install runs the package's build script, which pnpm blocks until allowed:
-if pnpm prints an `allowBuilds` key, add it to
-`~/.dsh/profiles/web/pnpm-workspace.yaml` and re-run. Updating is
-`dsh plugin --profile web update dsh-llm-codex`.
+The first install resolves and clones (about a minute here). Update later with:
+
+```sh
+dsh plugin --profile web update dsh-llm-codex
+```
+
+If pnpm prints an `allowBuilds` key — it blocks dependency build scripts by
+default — add that key to `~/.dsh/profiles/web/pnpm-workspace.yaml` and re-run.
+This package ships no build step, so a plain install normally needs nothing.
 
 ### Option C — a folder for development
 
