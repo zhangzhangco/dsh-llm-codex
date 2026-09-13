@@ -1,6 +1,6 @@
 {
   "name": "dsh-llm-codex",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Codex route for DeepSeek Harness: local Codex CLI first, OpenAI-compatible API fallback",
   "keywords": [

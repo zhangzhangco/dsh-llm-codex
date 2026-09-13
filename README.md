@@ -152,6 +152,46 @@ such as `gpt-6-astra` may be sent to an endpoint serving a different model. Use
 `fallback.model` to pin the id the fallback endpoint expects, or point
 `modelsCachePath`/`models` at ids that match it.
 
+### A local endpoint as its own selectable route
+
+Mount the plugin a second time with `transport: api` to get a route that never
+touches Codex. It **discovers the models the endpoint serves** from
+`/v1/models`, so the picker lists what that endpoint really answers with
+(including the capacity a llama.cpp server reports as `meta.n_ctx`) instead of
+Codex's catalog:
+
+```yaml
+- insert:
+    - id: llm-codex
+      name: dsh-llm-codex
+      config:
+        provider: codex-local
+        sandbox: read-only
+        transport: auto
+    - id: llm-gpudev
+      name: dsh-llm-codex
+      config:
+        provider: gpudev
+        transport: api
+        fallback:
+          baseURL: http://gpudev:8088/v1
+          apiKeyEnv: GPUDEV_API_KEY
+```
+
+That yields two providers: **Codex (local)** with the Codex models, and
+**gpudev:8088** with `qwen3.8-27b-q5`. An endpoint-only route takes its display
+name from the endpoint host, needs no credential, and declares no image
+capability because the fallback path sends text only.
+
+Discovery is advisory and cached for a minute: an unreachable endpoint leaves
+the list empty rather than failing model resolution, and a failed refresh keeps
+the previous list. Point the same row at any OpenAI-compatible server.
+
+When an endpoint-only route has nothing to discover, it falls back to
+`fallback.model`, then `models`. Setting `fallback.model` also pins the id sent
+on the wire; when it is empty, the id the caller selected is sent as-is, which
+keyless servers such as llama.cpp ignore in favour of the single loaded model.
+
 `transport: auto` tries the CLI first and falls back only when the CLI produced
 **nothing** and failed with `AUTH`, `MISSING_CREDENTIAL`, `TRANSPORT`, `TIMEOUT`,
 `INVALID_REQUEST`, or `EMPTY_RESPONSE`. A failure after partial output is
@@ -184,7 +224,7 @@ Build the package, copy the `.tgz` to the other Mac (AirDrop, `scp`, USB), then
 on that machine:
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-llm-codex-0.1.1.tgz
+dsh plugin --profile web add /path/to/dsh-llm-codex-0.1.2.tgz
 ```
 
 Then add the mount row to that machine's

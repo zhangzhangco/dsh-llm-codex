@@ -18,7 +18,7 @@ import {
 } from '@deepseek-ai/dsh-llm';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { Config, apiEnabled, cliEnabled, resolveCommand } from './config.js';
-import { defaultModelsCachePath, readCatalog, readConfiguredModel } from './catalog.js';
+import { EndpointModelCache, defaultModelsCachePath, readCatalog, readConfiguredModel } from './catalog.js';
 import { streamFallback } from './fallback.js';
 
 /** Plugin identity used in diagnostics. */
@@ -55,6 +55,7 @@ class CodexAdapter extends LlmAdapter {
     this.catalogLoaded = false;
     this.catalogPath = '';
     this.configuredModel = '';
+    this.endpointModels = new EndpointModelCache(config.fallback.baseURL, resolveApiKey);
   }
 
   /** The catalog cache path for this config. */
@@ -108,11 +109,45 @@ class CodexAdapter extends LlmAdapter {
 
   /** {@inheritDoc} */
   providerInfo(provider) {
+    // An api-only route is the fallback endpoint, not Codex; name it after the
+    // host it actually talks to so the picker does not mislabel it.
+    if (apiEnabled(this.config) && !cliEnabled(this.config)) {
+      return { id: provider, name: this.endpointLabel() };
+    }
     return { id: provider, name: 'Codex (local)' };
+  }
+
+  /** Display name for an endpoint-only route. */
+  endpointLabel() {
+    try {
+      const host = new URL(this.config.fallback.baseURL).host;
+      return host === '' ? 'OpenAI-compatible endpoint' : host;
+    } catch {
+      return 'OpenAI-compatible endpoint';
+    }
   }
 
   /** {@inheritDoc} */
   async listModels(provider) {
+    // An `api`-only route serves whatever its endpoint serves, so that list is
+    // the honest one to show; a CLI or mixed route advertises Codex's catalog.
+    if (apiEnabled(this.config) && !cliEnabled(this.config)) {
+      const discovered = await this.endpointModels.current();
+      if (discovered.length > 0) {
+        return discovered.map((model) => ({
+          provider,
+          id: model.id,
+          name: model.id,
+          description: `served by ${this.config.fallback.baseURL}`,
+        }));
+      }
+      return this.configuredModels(provider);
+    }
+    return this.codexModels(provider);
+  }
+
+  /** The configured/cached Codex catalog for one route. */
+  codexModels(provider) {
     this.loadCatalog();
     const seen = new Set();
     const entries = [];
@@ -133,8 +168,20 @@ class CodexAdapter extends LlmAdapter {
     return entries;
   }
 
+  /** Explicit ids for a route whose catalog cannot be read. */
+  configuredModels(provider) {
+    const ids = this.config.models.length > 0
+      ? this.config.models
+      : this.config.fallback.model === ''
+        ? []
+        : [this.config.fallback.model];
+    return ids.map((id) => ({ provider, id, name: id, description: 'configured explicitly' }));
+  }
+
   /** Request modalities a model accepts. */
   inputModalities(model) {
+    // An endpoint-discovered model is not in the Codex catalog, and the
+    // fallback sends text only, so it declares no image capability.
     const modality = this.catalogEntry(model)?.inputModalities ?? [];
     return modality.filter((value) => value === 'text' || value === 'image');
   }
@@ -142,17 +189,26 @@ class CodexAdapter extends LlmAdapter {
   /** {@inheritDoc} */
   async resolveModel(provider, model) {
     const { efforts, defaultEffort } = this.effortsFor(model);
+    const entry = this.catalogEntry(model);
+    const contextWindow = entry?.contextWindow
+      ?? (apiEnabled(this.config) ? this.endpointContext(model) : undefined)
+      ?? this.config.defaultContextWindow;
     return {
       provider,
       id: model,
-      name: this.catalogEntry(model)?.name ?? model,
-      context: { contextWindow: this.catalogEntry(model)?.contextWindow ?? this.config.defaultContextWindow },
+      name: entry?.name ?? model,
+      context: { contextWindow },
       reasoning: {
         efforts: efforts.map((effort) => ({ id: ReasoningEffortId(effort), name: effort })),
         ...(defaultEffort === undefined || defaultEffort === '' ? {} : { defaultEffort: ReasoningEffortId(defaultEffort) }),
       },
       inputModalities: this.inputModalities(model),
     };
+  }
+
+  /** Capacity the fallback endpoint reported for one model, when known. */
+  endpointContext(model) {
+    return this.endpointModels.models.find((entry) => entry.id === model)?.contextWindow;
   }
 
   /** {@inheritDoc} */

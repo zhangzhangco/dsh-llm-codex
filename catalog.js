@@ -64,3 +64,91 @@ export function readConfiguredModel(path) {
     return undefined;
   }
 }
+
+/** How long one endpoint model listing stays fresh. */
+const ENDPOINT_CACHE_MS = 60000;
+
+/**
+ * Discover the models an OpenAI-compatible endpoint serves.
+ *
+ * The endpoint owns this list, so an `api`-transport route can advertise the
+ * models it actually answers with instead of the Codex catalog. An
+ * unreachable or malformed endpoint yields an empty list: discovery is
+ * advisory, and the caller keeps whatever it already had.
+ * @param baseURL - the endpoint base, with or without a `/v1` suffix.
+ * @param apiKey - credential value; empty sends no `Authorization` header.
+ * @param timeoutMs - request budget.
+ * @returns discovered ids with any capacity the endpoint reports.
+ */
+export async function listEndpointModels(baseURL, apiKey, timeoutMs = 4000) {
+  const base = baseURL.replace(/\/+$/u, '');
+  const url = /\/v\d+$/u.test(base) ? `${base}/models` : `${base}/v1/models`;
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: 'application/json',
+        ...(apiKey === '' ? {} : { authorization: `Bearer ${apiKey}` }),
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return [];
+  }
+  const entries = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
+  const models = [];
+  for (const entry of entries) {
+    const id = entry?.id ?? entry?.name ?? entry?.model;
+    if (typeof id !== 'string' || id === '') continue;
+    // llama.cpp reports the served context as `meta.n_ctx`; other servers omit it.
+    const contextWindow = Number.isFinite(entry?.meta?.n_ctx) && entry.meta.n_ctx > 0 ? entry.meta.n_ctx : undefined;
+    models.push({ id, contextWindow });
+  }
+  return models;
+}
+
+/**
+ * One cached endpoint listing, refreshed on demand.
+ */
+export class EndpointModelCache {
+  /**
+   * @param baseURL - endpoint base URL.
+   * @param resolveApiKey - resolves the endpoint credential per request.
+   */
+  constructor(baseURL, resolveApiKey) {
+    this.baseURL = baseURL;
+    this.resolveApiKey = resolveApiKey;
+    this.models = [];
+    this.fetchedAt = 0;
+    this.pending = undefined;
+  }
+
+  /**
+   * Current models, refreshing at most once per {@link ENDPOINT_CACHE_MS}. A
+   * failed refresh keeps the previous list so a blip cannot empty the picker.
+   * @returns discovered models.
+   */
+  async current() {
+    if (Date.now() - this.fetchedAt < ENDPOINT_CACHE_MS) return this.models;
+    this.pending ??= (async () => {
+      try {
+        const discovered = await listEndpointModels(this.baseURL, await this.resolveApiKey());
+        if (discovered.length > 0) {
+          this.models = discovered;
+          this.fetchedAt = Date.now();
+        }
+      } finally {
+        this.pending = undefined;
+      }
+      return this.models;
+    })();
+    return this.pending;
+  }
+}
