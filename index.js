@@ -19,6 +19,7 @@ import {
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { Config, apiEnabled, cliEnabled, resolveCommand } from './config.js';
 import { EndpointModelCache, defaultModelsCachePath, readCatalog, readConfiguredModel } from './catalog.js';
+import { streamAppServer } from './app-server.js';
 import { streamFallback } from './fallback.js';
 
 /** Plugin identity used in diagnostics. */
@@ -40,7 +41,7 @@ function isCodexModel(model) {
 }
 
 /** The Codex route adapter. */
-class CodexAdapter extends LlmAdapter {
+export class CodexAdapter extends LlmAdapter {
   /**
    * @param config - this activation's resolved config.
    * @param resolveApiKey - resolves the fallback endpoint credential.
@@ -238,7 +239,13 @@ class CodexAdapter extends LlmAdapter {
 
     const attempt = { produced: false };
     try {
-      yield* this.streamCli(options, requested, effort, attempt);
+      if (this.config.cliBackend === 'app-server') {
+        yield* streamAppServer({ command: this.command, config: this.config,
+          prompt: buildPrompt(options, this.inputModalities(requested).includes('image')),
+          model: requested, effort, signal: options.signal, attempt });
+      } else {
+        yield* this.streamCli(options, requested, effort, attempt);
+      }
       return;
     } catch (error) {
       if (attempt.produced || options.signal?.aborted === true) throw error;
@@ -504,7 +511,7 @@ function buildPrompt(options, imageCapable) {
 function renderConversation(messages, imageCapable) {
   const rendered = messages
     .map((message) => renderMessage(message, imageCapable))
-    .filter((text) => text !== '');
+    .filter((entry) => entry !== null && entry.text !== '');
   if (rendered.length === 0) return '';
   if (rendered.length === 1) return rendered[0].text;
   const history = rendered.slice(0, -1).map((entry) => `### ${entry.role}\n${entry.text}`);

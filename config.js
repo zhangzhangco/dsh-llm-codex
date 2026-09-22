@@ -88,6 +88,8 @@ export const Config = z.object({
   command: z.string().default(''),
   /** Extra argv passed to `codex exec` before the prompt. */
   args: z.array(z.string()).default([]),
+  cliBackend: z.union([z.const('exec'), z.const('app-server')]).default('exec'),
+  appServerArgs: z.array(z.string()).default([]),
   model: z.string().default(''),
   reasoningEffort: z.string().default(''),
   sandbox: z.union([z.const('read-only'), z.const('workspace-write'), z.const('danger-full-access')]).default('read-only'),

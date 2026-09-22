@@ -314,3 +314,68 @@ relative path.
   not constrain it. Where Codex cannot create its own sandbox, writes require
   `danger-full-access` and the run is unconfined; the fallback path executes no
   tools at all.
+
+## True streaming through App Server
+
+Set `cliBackend: app-server` in the `llm-codex` config to use Codex's stdio
+App Server protocol. The default remains `exec` for compatibility. The existing
+`transport: auto | cli | api` setting continues to select CLI versus API routing.
+`args` applies only to exec; `appServerArgs` applies only to app-server (for
+example `-c` overrides). Existing exec-specific flags are never forwarded blindly.
+
+Each request owns an isolated process and ephemeral thread (unless `ephemeral`
+is explicitly disabled). Text deltas are forwarded immediately; completion only
+adds an unreceived tail. Visible reasoning summaries have separate block indices.
+The adapter preserves model, effort, cwd, CODEX_HOME and sandbox settings.
+App Server uses `approvalPolicy: never`: sandbox restrictions remain in force,
+but it cannot ask for elevated permissions. Unexpected interactive requests fail
+closed; this is not an approval bridge. Codex tools still operate outside DSH's
+tool-call transcript, exactly as with the exec backend.
+
+Cancellation, timeout, early consumer exit and completion clean up the process.
+No automatic retry through exec is made. Existing API fallback is allowed only
+before output, when configured. Network/WebSocket retries inside Codex are a
+separate source of latency; switching the interface does not eliminate them.
+
+Two failure modes are handled explicitly, both verified against a real turn:
+
+- The protocol has **no top-level fatal error notification**, so a thread the
+  server closes without a `turn/completed` would otherwise stall until
+  `timeoutMs` (10 minutes by default). A `thread/closed` for the active thread
+  now fails the request immediately. A normal ephemeral turn never emits it —
+  observed ordering puts `turn/completed` last.
+- `error` notifications with `willRetry: true` are the transport retries
+  (WebSocket → HTTPS) and are **not** failures; the verdict still arrives through
+  `turn/completed`. The first three are echoed to stderr, truncated, so a turn
+  whose first token took two minutes is explainable in the log instead of
+  looking like a silent stall.
+
+Images retain the old textual attachment placeholder behavior; this change does
+not implement native image attachment forwarding.
+
+Protocol reference: https://learn.chatgpt.com/docs/app-server
+
+Verified against Codex CLI 0.154.0 on macOS in two independent ways:
+
+- The generated protocol bundle (`codex app-server generate-json-schema --out DIR
+  --experimental`) confirms every method and field this module uses: the client
+  requests `initialize` / `initialized` / `thread/start` / `turn/start` /
+  `turn/interrupt`, the notifications `item/agentMessage/delta`,
+  `item/reasoning/summaryTextDelta`, `item/completed`, `thread/tokenUsage/updated`
+  and `turn/completed`, and the exact param names (`clientInfo`, `threadId`,
+  `turnId`, `itemId`, `delta`, `summaryIndex`, `input`, `effort`, `sandbox`,
+  `approvalPolicy`, `ephemeral`). `AskForApproval` really does accept `never` and
+  `SandboxMode` really does accept the three CLI sandbox names.
+- A live handshake and streaming turn: `initialize` → `initialized` →
+  `thread/start` → `turn/start` were accepted, and one real turn delivered
+  **565 incremental text deltas** (612 characters) spread over 23 seconds rather
+  than a single blob. The first token, however, arrived at **122s** because Codex
+  retried its transport (WebSocket → HTTPS) before generating; that latency is in
+  Codex's own network stack and is **not** removed by this backend.
+
+Development: `npm ci --ignore-scripts`, then `npm test`.
+Opt-in real request: `node scripts/probe-stream.mjs <model>` (uses CLI sign-in).
+Rollback: set `cliBackend: exec` and restart DSH. The profile package.json and
+pnpm-lock.yaml are backed up next to themselves as `*.bak-<timestamp>` before the
+link install, so a package installation rollback means restoring those two files
+and running `pnpm install`.
