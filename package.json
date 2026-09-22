@@ -1,6 +1,6 @@
 {
   "name": "dsh-llm-codex",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "Codex route for DeepSeek Harness: local Codex CLI first, OpenAI-compatible API fallback",
   "keywords": [
@@ -15,6 +15,10 @@
     "type": "git",
     "url": "git+https://github.com/zhangzhangco/dsh-llm-codex.git"
   },
+  "homepage": "https://github.com/zhangzhangco/dsh-llm-codex#readme",
+  "bugs": {
+    "url": "https://github.com/zhangzhangco/dsh-llm-codex/issues"
+  },
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -25,10 +29,16 @@
     "config.js",
     "catalog.js",
     "fallback.js",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE",
     "app-server.js"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2"
   },

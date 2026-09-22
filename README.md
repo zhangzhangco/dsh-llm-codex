@@ -10,10 +10,23 @@ This plugin is not part of the published `@deepseek-ai/*` distribution. It lives
 in the `web` profile and is mounted through that profile's patch layer, so the
 DSH installation itself is untouched.
 
-Quick start: install the package with
-`dsh plugin --profile web add <path-or-url>`, then add the mount row to the
-profile patch file. Both forms are in
+Quick start — one command, no patch file to edit:
+
+```sh
+dsh plugin --profile web add git+ssh://git@github.com/zhangzhangco/dsh-llm-codex.git
+```
+
+The package declares `dsh.bundle.patch`, so `dsh plugin` appends it to the
+profile's `dsh.profile.bundles` and its `cordis.patch.yml` mounts the
+`llm-codex` row on its own. Restart the profile and the route appears in the
+model selector. Other install forms (tarball, linked folder) are in
 [Sharing with another machine](#sharing-with-another-machine).
+
+> This package is intentionally **not published to npm** and keeps
+> `private: true`. The name `dsh-llm-codex` on npm belongs to an unrelated
+> implementation by another author; the field is a guard against publishing over
+> it. GitHub is the distribution channel — see
+> [Why GitHub and not npm](#why-github-and-not-npm).
 
 ## What it is (and is not)
 
@@ -200,14 +213,34 @@ request to the endpoint, bypassing Codex.
 
 ## Install / update
 
-Local development installs this directory as a **link** dependency, so edits here
+Every form below is a `dsh plugin` call, which forwards to pnpm in the profile
+directory and then reconciles `dsh.profile.bundles` against what is installed.
+Because this package declares `dsh.bundle.patch`, the mount row is added for you
+— there is no `cordis.patch.yml` edit in any install path.
+
+For local development, install this directory as a **link** dependency so edits
 take effect on the next load with no reinstall:
 
 ```sh
-dsh plugin --profile web add link:~/.dsh/profiles/web/plugins/dsh-llm-codex
+dsh plugin --profile web add link:~/src/dsh-llm-codex
 ```
 
+`dsh plugin` anchors a relative `file:`/`link:` spec to your **current
+directory**, not the profile, so run it from outside the profile when using a
+relative path.
+
 An empty `baseURL` plus `transport: cli` is enough to keep the plugin offline.
+A restart of the profile is required for a mount to take effect.
+
+## Why GitHub and not npm
+
+There is no official DSH plugin registry: a plugin is an ordinary package, and
+discovery happens through the GitHub `dsh-plugin` topic. This repository is
+distributed that way, and `private: true` stays set for one concrete reason —
+the name `dsh-llm-codex` on npm is already taken by an unrelated implementation
+(`yequ172672/dsh-codex-subscription`). Publishing under the same name would
+either fail or collide with a package users already have. Install from the git
+repository instead; the `dsh-plugin` topic is what makes it discoverable.
 
 ## Sharing with another machine
 
@@ -218,33 +251,27 @@ resolves the harness packages from the receiving DSH installation. Nothing here
 hard-codes this machine's paths, so the same package works on any Mac with DSH
 and a signed-in Codex.
 
+All three options below are a single `dsh plugin --profile web add` call. The
+package carries its own `cordis.patch.yml` and declares `dsh.bundle.patch`, so
+the `llm-codex` mount row is composed from the bundle layer — do **not** also
+hand-write that row, and see
+[Upgrading from 0.1.x](#upgrading-from-01x) if you installed before 0.2.0.
+
 ### Option A — a tarball (simplest)
 
 Build the package, copy the `.tgz` to the other Mac (AirDrop, `scp`, USB), then
 on that machine:
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-llm-codex-0.1.2.tgz
-```
-
-Then add the mount row to that machine's
-`~/.dsh/profiles/web/cordis.patch.yml`:
-
-```yaml
-- insert:
-    - id: llm-codex
-      name: dsh-llm-codex
-      config:
-        provider: codex-local
-        sandbox: read-only
-        transport: auto
-        fallback:
-          baseURL: ''
-          apiKeyEnv: CODEX_FALLBACK_API_KEY
+dsh plugin --profile web add /path/to/dsh-llm-codex-0.2.0.tgz
 ```
 
 pnpm copies the tarball into its virtual store, so the `.tgz` is only needed for
-the install. Re-run the same command with a newer tarball to update.
+the install. Re-run the same command with a newer tarball to update. Nothing in
+the receiving profile needs editing: the mount row comes from the package.
+
+`npm pack` in this directory produces that tarball, and it works even though
+`private: true` is set — the field only blocks publishing to a registry.
 
 ### Option B — the git repository
 
@@ -268,15 +295,33 @@ This package ships no build step, so a plain install normally needs nothing.
 
 ### Option C — a folder for development
 
-Copy the directory over and link it, so edits propagate without reinstalling:
+Copy the directory over and link it, so edits propagate without reinstalling —
+the `link:` form in [Install / update](#install--update).
 
-```sh
-dsh plugin --profile web add link:~/src/dsh-llm-codex
+### Upgrading from 0.1.x
+
+Before 0.2.0 the package declared no `dsh.bundle`, so every install was finished
+by hand: a profile patch row in `~/.dsh/profiles/<profile>/cordis.patch.yml`
+with `id: llm-codex`. From 0.2.0 the bundle supplies that row, and **two entries
+with the same id are fatal at boot** — the loader throws
+`duplicate loader entry id: llm-codex` and the profile does not start.
+
+So when moving from 0.1.x, delete the `insert` row for `llm-codex` from your own
+patch file and keep only the per-machine overrides as an id-targeted patch:
+
+```yaml
+- id: llm-codex
+  config:
+    sandbox: danger-full-access
 ```
 
-`dsh plugin` anchors a relative `file:`/`link:` spec to your **current
-directory**, not the profile, so run it from outside the profile when using a
-relative path.
+An id-targeted patch replaces the whole `config` value; the Schemastery schema
+in `config.js` fills every omitted key with its default, so a partial override
+is enough. Check the composed tree without booting anything:
+
+```sh
+dsh --profile web --dump-config
+```
 
 ### What does not transfer
 

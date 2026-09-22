@@ -1,0 +1,28 @@
+# dsh-llm-codex bundle patch — the profile layer this package ships.
+#
+# `dsh plugin --profile <name> add <this package>` mounts this row by itself:
+# reconcile sees the `dsh.bundle` declaration in package.json, appends the
+# package to that profile's `dsh.profile.bundles`, and the row below is composed
+# on top of the bundle layers. No hand-editing of cordis.patch.yml is required,
+# and the DSH installation itself stays untouched.
+#
+# Keep this file machine-independent. Every value here is the plugin's own
+# default (see config.js); per-machine settings belong in the profile's own
+# cordis.patch.yml as an id-targeted patch on this row, for example:
+#
+#   - id: llm-codex
+#     config:
+#       sandbox: danger-full-access
+#
+# An id-targeted patch replaces the whole `config` value, and the Schemastery
+# schema in config.js fills in every key you leave out, so a partial override is
+# enough. The same rule applies to the fallback endpoint: `fallback.baseURL` is
+# empty by default, which disables the API path and keeps the route on the CLI.
+#
+# Do NOT add a second `insert` row with id `llm-codex` in a profile patch file.
+# Duplicate loader entry ids are fatal at boot (`duplicate loader entry id`), and
+# this bundle already provides one. Profiles upgraded from 0.1.x used to carry
+# that row by hand — see "Upgrading from 0.1.x" in README.md.
+- insert:
+    - id: llm-codex
+      name: dsh-llm-codex
